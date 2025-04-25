@@ -1,0 +1,6 @@
+setup.py
+villecode_api.egg-info/PKG-INFO
+villecode_api.egg-info/SOURCES.txt
+villecode_api.egg-info/dependency_links.txt
+villecode_api.egg-info/requires.txt
+villecode_api.egg-info/top_level.txt
