@@ -9,6 +9,8 @@ import difflib
 from station_data import STATION_CODES
 from station_aliases import STATION_ALIASES
 
+app = Flask(__name__)
+CORS(app)
 
 class VilleCodeFinder:
     def __init__(self, data_path=None):
