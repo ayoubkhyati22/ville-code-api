@@ -8,6 +8,7 @@ import unicodedata
 import difflib
 from station_data import STATION_CODES
 from station_aliases import STATION_ALIASES
+from station_data_markoub import STATION_DATA_MARKOUB
 
 app = Flask(__name__)
 CORS(app)
@@ -20,7 +21,7 @@ class VilleCodeFinder:
         Args:
             data_path: Chemin vers le fichier CSV contenant les villes du maroc et leurs codes
         """
-        # Dictionnaire de base
+        # Dictionnaire de base pour ONCF
         if data_path and data_path.endswith('.csv'):
             self.load_data_from_csv(data_path)
         else:
@@ -28,8 +29,40 @@ class VilleCodeFinder:
             self.data = STATION_CODES
             self.villes = list(self.data.keys())
         
+        # Dictionnaire pour Markoub - conversion du format liste vers dictionnaire
+        self.markoub_data = self.convert_markoub_data(STATION_DATA_MARKOUB)
+        self.markoub_villes = list(self.markoub_data.keys())
+        
         # Création du dictionnaire d'alias
         self.create_aliases()
+
+    def convert_markoub_data(self, markoub_list):
+        """
+        Convertit les données Markoub du format liste vers dictionnaire
+        
+        Args:
+            markoub_list: Liste des données Markoub
+            
+        Returns:
+            dict: Dictionnaire {ville: code}
+        """
+        markoub_dict = {}
+        
+        if isinstance(markoub_list, list):
+            for item in markoub_list:
+                if isinstance(item, dict) and 'label' in item and 'value' in item:
+                    # Normaliser le nom de la ville (minuscules)
+                    ville_name = item['label'].lower()
+                    markoub_dict[ville_name] = item['value']
+                elif isinstance(item, dict) and 'meta' in item and 'value' in item:
+                    # Format alternatif avec 'meta'
+                    ville_name = item['meta'].lower()
+                    markoub_dict[ville_name] = item['value']
+        elif isinstance(markoub_list, dict):
+            # Si c'est déjà un dictionnaire, on le retourne tel quel
+            return {k.lower(): v for k, v in markoub_list.items()}
+            
+        return markoub_dict
 
     def load_data_from_csv(self, data_path):
         """
@@ -68,38 +101,49 @@ class VilleCodeFinder:
         Crée un dictionnaire d'alias pour les villes
         """
         self.aliases = {}
+        self.markoub_aliases = {}
         
         # Définir des alias communs
         common_aliases = STATION_ALIASES
         
-        # Ajouter les alias prédéfinis
+        # Ajouter les alias prédéfinis pour ONCF
         for ville, liste_alias in common_aliases.items():
             for alias in liste_alias:
                 if ville in self.data:  # On vérifie que la ville existe dans notre base
                     self.aliases[alias] = ville
         
-        # Générer automatiquement des alias supplémentaires pour toutes les villes
+        # Générer automatiquement des alias supplémentaires pour toutes les villes ONCF
         for ville in self.villes:
-            # Suppression des accents
-            alias_sans_accent = self.remove_accents(ville)
-            if alias_sans_accent != ville:
-                self.aliases[alias_sans_accent] = ville
+            self._generate_aliases_for_ville(ville, self.aliases, ville)
             
-            # Versions sans espace
-            alias_sans_espace = ville.replace(" ", "")
-            if alias_sans_espace != ville:
-                self.aliases[alias_sans_espace] = ville
-                
-            # Première partie du nom (si composé)
-            if " " in ville:
-                premier_mot = ville.split(" ")[0]
-                if len(premier_mot) > 2:  # On ne prend que les mots assez longs
-                    self.aliases[premier_mot] = ville
-                
-                # Dernière partie du nom
-                dernier_mot = ville.split(" ")[-1]
-                if len(dernier_mot) > 2:
-                    self.aliases[dernier_mot] = ville
+        # Générer des alias pour Markoub
+        for ville in self.markoub_villes:
+            self._generate_aliases_for_ville(ville, self.markoub_aliases, ville)
+
+    def _generate_aliases_for_ville(self, ville, alias_dict, original_ville):
+        """
+        Génère des alias pour une ville donnée
+        """
+        # Suppression des accents
+        alias_sans_accent = self.remove_accents(ville)
+        if alias_sans_accent != ville:
+            alias_dict[alias_sans_accent] = original_ville
+        
+        # Versions sans espace
+        alias_sans_espace = ville.replace(" ", "")
+        if alias_sans_espace != ville:
+            alias_dict[alias_sans_espace] = original_ville
+            
+        # Première partie du nom (si composé)
+        if " " in ville:
+            premier_mot = ville.split(" ")[0]
+            if len(premier_mot) > 2:  # On ne prend que les mots assez longs
+                alias_dict[premier_mot] = original_ville
+            
+            # Dernière partie du nom
+            dernier_mot = ville.split(" ")[-1]
+            if len(dernier_mot) > 2:
+                alias_dict[dernier_mot] = original_ville
 
     def remove_accents(self, text):
         """
@@ -218,12 +262,13 @@ class VilleCodeFinder:
         # Retourner le meilleur score parmi toutes nos méthodes
         return max(common_words_score, seq_similarity, levenshtein_score)
 
-    def find_code(self, ville_query, threshold=40):
+    def find_code(self, ville_query, service='oncf', threshold=40):
         """
         Trouve le code d'une ville même avec des erreurs d'orthographe
 
         Args:
             ville_query: Nom de la ville à rechercher (peut être incomplet ou contenir des erreurs)
+            service: Service à utiliser ('oncf' ou 'markoub')
             threshold: Seuil de similarité minimum (0-100)
 
         Returns:
@@ -234,40 +279,50 @@ class VilleCodeFinder:
             
         ville_query = ville_query.lower()
         
+        # Sélectionner les données appropriées selon le service
+        if service == 'markoub':
+            data = self.markoub_data
+            villes = self.markoub_villes
+            aliases = self.markoub_aliases
+        else:
+            data = self.data
+            villes = self.villes
+            aliases = self.aliases
+        
         # 1. Recherche exacte d'abord
-        if ville_query in self.data:
-            return self.data[ville_query], 100, ville_query
+        if ville_query in data:
+            return data[ville_query], 100, ville_query
             
         # 2. Vérification dans le dictionnaire d'alias
         normalized_query = self.normalize_text(ville_query)
-        if normalized_query in self.aliases:
-            original_ville = self.aliases[normalized_query]
-            return self.data[original_ville], 95, original_ville
+        if normalized_query in aliases:
+            original_ville = aliases[normalized_query]
+            return data[original_ville], 95, original_ville
             
         # 3. Recherche de la chaîne dans les noms de villes
-        for ville in self.villes:
+        for ville in villes:
             if normalized_query in self.normalize_text(ville):
-                return self.data[ville], 90, ville
+                return data[ville], 90, ville
                 
         # 4. Si aucune correspondance exacte, utiliser la recherche par similarité
         best_match = None
         best_score = 0
         
-        for ville in self.villes:
+        for ville in villes:
             score = self.calculate_similarity(ville_query, ville)
             if score > best_score:
                 best_score = score
                 best_match = ville
         
         # Vérifier aussi parmi les alias pour la similarité
-        for alias, ville in self.aliases.items():
+        for alias, ville in aliases.items():
             score = self.calculate_similarity(ville_query, alias)
             if score > best_score:
                 best_score = score
                 best_match = ville
 
         if best_match and best_score >= threshold:
-            return self.data[best_match], best_score, best_match
+            return data[best_match], best_score, best_match
         else:
             return None, 0, None
 
@@ -291,7 +346,7 @@ def index():
         <li>arrivalStation: Nom de la gare d'arrivée</li>
     </ul>
     <p>Exemple: <a href="/api/find?departStation=casa&arrivalStation=rabat">/api/find?departStation=casa&arrivalStation=rabat</a></p>
-    <p>Ou utilisez l'endpoint /api/booking pour obtenir un objet de réservation</p>
+    <p>Ou utilisez l'endpoint /api/booking pour obtenir un objet de réservation complet (ONCF + Markoub)</p>
     """
 
 @app.route('/api/find', methods=['GET'])
@@ -304,7 +359,7 @@ def find_stations():
         arrivalStation: Nom de la gare d'arrivée
     
     Returns:
-        JSON avec les informations des deux gares
+        JSON avec les informations des deux gares pour ONCF et Markoub
     """
     depart = request.args.get('departStation', '')
     arrivee = request.args.get('arrivalStation', '')
@@ -315,23 +370,43 @@ def find_stations():
             "error": "Les paramètres 'departStation' et 'arrivalStation' sont requis"
         }), 400
     
-    # Rechercher les codes des gares
-    code_depart, score_depart, ville_depart_exacte = finder.find_code(depart)
-    code_arrivee, score_arrivee, ville_arrivee_exacte = finder.find_code(arrivee)
+    # Rechercher les codes des gares pour ONCF
+    code_depart_oncf, score_depart_oncf, ville_depart_exacte_oncf = finder.find_code(depart, 'oncf')
+    code_arrivee_oncf, score_arrivee_oncf, ville_arrivee_exacte_oncf = finder.find_code(arrivee, 'oncf')
+    
+    # Rechercher les codes des gares pour Markoub
+    code_depart_markoub, score_depart_markoub, ville_depart_exacte_markoub = finder.find_code(depart, 'markoub')
+    code_arrivee_markoub, score_arrivee_markoub, ville_arrivee_exacte_markoub = finder.find_code(arrivee, 'markoub')
     
     # Préparer la réponse
     response = {
-        "depart": {
-            "recherche": depart,
-            "ville": ville_depart_exacte,
-            "code": code_depart,
-            "score": score_depart
+        "oncf": {
+            "depart": {
+                "recherche": depart,
+                "ville": ville_depart_exacte_oncf,
+                "code": code_depart_oncf,
+                "score": score_depart_oncf
+            },
+            "arrivee": {
+                "recherche": arrivee,
+                "ville": ville_arrivee_exacte_oncf,
+                "code": code_arrivee_oncf,
+                "score": score_arrivee_oncf
+            }
         },
-        "arrivee": {
-            "recherche": arrivee,
-            "ville": ville_arrivee_exacte,
-            "code": code_arrivee,
-            "score": score_arrivee
+        "markoub": {
+            "depart": {
+                "recherche": depart,
+                "ville": ville_depart_exacte_markoub,
+                "code": code_depart_markoub,
+                "score": score_depart_markoub
+            },
+            "arrivee": {
+                "recherche": arrivee,
+                "ville": ville_arrivee_exacte_markoub,
+                "code": code_arrivee_markoub,
+                "score": score_arrivee_markoub
+            }
         }
     }
     
@@ -340,7 +415,7 @@ def find_stations():
 @app.route('/api/booking', methods=['GET'])
 def booking_request():
     """
-    Endpoint pour générer un objet de réservation au format demandé
+    Endpoint pour générer un objet de réservation au format demandé pour ONCF et Markoub
     
     Query parameters:
         departStation: Nom de la gare de départ 
@@ -349,9 +424,10 @@ def booking_request():
         adults: Nombre d'adultes (optionnel)
         kids: Nombre d'enfants (optionnel)
         dateDepart: Date de départ (format YYYY-MM-DD)
+        passengers: Nombre total de passagers pour Markoub (optionnel)
         
     Returns:
-        JSON avec l'objet de réservation formaté
+        JSON avec l'objet de réservation formaté pour ONCF et Markoub
     """
     # Récupérer les paramètres
     depart = request.args.get('departStation', '')
@@ -359,33 +435,35 @@ def booking_request():
     comfort = request.args.get('comfort', '2')
     adults = request.args.get('adults', '1')
     kids = request.args.get('kids', '0')
+    passengers = request.args.get('passengers', '1')
     date_str = request.args.get('dateDepart', None)
     
-    # Rechercher les codes des gares
-    code_depart, _, _ = finder.find_code(depart)
-    code_arrivee, _, _ = finder.find_code(arrivee)
+    # Rechercher les codes des gares pour ONCF
+    code_depart_oncf, _, _ = finder.find_code(depart, 'oncf')
+    code_arrivee_oncf, _, _ = finder.find_code(arrivee, 'oncf')
     
-    # Si les codes ne sont pas trouvés, utiliser des valeurs par défaut
-    #if not code_depart:
-        #code_depart = "200"  # Code par défaut pour Casablanca
-    #if not code_arrivee:
-        #code_arrivee = "380"  # Code par défaut pour Rabat
+    # Rechercher les codes des gares pour Markoub
+    code_depart_markoub, _, _ = finder.find_code(depart, 'markoub')
+    code_arrivee_markoub, _, _ = finder.find_code(arrivee, 'markoub')
     
     # Préparer la date de départ
     if date_str:
         try:
             date_obj = datetime.strptime(date_str, "%Y-%m-%d")
             departure_date = date_obj.strftime("%Y-%m-%dT10:00:00+01:00")
+            markoub_date = date_obj.strftime("%Y-%m-%d")
         except ValueError:
             # Utiliser la date actuelle si le format est incorrect
             departure_date = datetime.now().strftime("%Y-%m-%dT10:00:00+01:00")
+            markoub_date = datetime.now().strftime("%Y-%m-%d")
     else:
         departure_date = datetime.now().strftime("%Y-%m-%dT10:00:00+01:00")
+        markoub_date = datetime.now().strftime("%Y-%m-%d")
     
-    # Préparer la réponse au format demandé
-    response = {
-        "codeGareDepart": code_depart,
-        "codeGareArrivee": code_arrivee,
+    # Préparer la réponse ONCF
+    oncf_response = {
+        "codeGareDepart": code_depart_oncf,
+        "codeGareArrivee": code_arrivee_oncf,
         "codeNiveauConfort": int(comfort),
         "dateDepartAller": departure_date,
         "dateDepartAllerMax": None, 
@@ -411,29 +489,55 @@ def booking_request():
         "codeTiers": ""
     }
     
-    # Ajouter des voyageurs supplémentaires si nécessaire
+    # Ajouter des voyageurs supplémentaires si nécessaire pour ONCF
     total_passengers = int(adults) + int(kids)
     if total_passengers > 1:
         for _ in range(1, total_passengers):
-            response["listVoyageur"].append({
+            oncf_response["listVoyageur"].append({
                 "numeroClient": None,
                 "codeTarif": None,
                 "codeProfilDemographique": "3",
                 "dateNaissance": None
             })
     
+    # Préparer la réponse Markoub
+    markoub_response = {
+        "0": {
+            "json": {
+                "arrivalCityId": code_arrivee_markoub,
+                "departureCityId": code_depart_markoub,
+                "date": markoub_date,
+                "nbrOfPassengers": int(passengers),
+                "searchType": "direct"
+            }
+        }
+    }
+    
+    # Réponse combinée
+    response = {
+        "oncf": oncf_response,
+        "markoub": markoub_response
+    }
+    
     return jsonify(response)
 
 @app.route('/api/villes', methods=['GET'])
 def list_villes():
     """
-    Endpoint pour lister toutes les villes disponibles
+    Endpoint pour lister toutes les villes disponibles pour ONCF et Markoub
     
     Returns:
-        JSON avec la liste des villes et leurs codes
+        JSON avec la liste des villes et leurs codes pour les deux services
     """
-    villes_list = [{"ville": ville, "code": finder.data[ville]} for ville in finder.villes]
-    return jsonify(villes_list)
+    oncf_villes = [{"ville": ville, "code": finder.data[ville]} for ville in finder.villes]
+    markoub_villes = [{"ville": ville, "code": finder.markoub_data[ville]} for ville in finder.markoub_villes]
+    
+    response = {
+        "oncf": oncf_villes,
+        "markoub": markoub_villes
+    }
+    
+    return jsonify(response)
 
 if __name__ == "__main__":
     # Définir le port à partir de la variable d'environnement PORT ou utiliser 5000 par défaut

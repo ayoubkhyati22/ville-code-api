@@ -1,5 +1,4 @@
 STATION_ALIASES = {
-    # Major Cities & Existing Aliases (Expanded)
     "marrakech": ["kech", "marrek", "maraksh", "marakech", "marrakesh", "rak", "marrakech gare", "marrakech station"],
     "casablanca": ["casa", "kaza", "kazablanka", "dar beida", "casablanka", "casa city", "casablanca city"],
     "rabat": ["rbat", "rabaat", "rabat city", "rabat centre"],
